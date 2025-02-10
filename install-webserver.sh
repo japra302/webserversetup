@@ -108,9 +108,7 @@ EOT
 
 echo "🔹 Memulai Apache dan PHP-FPM..."
 loading_bar
-pkill -f httpd || echo "Apache tidak berjalan, melanjutkan..."
-pkill -f php-fpm || echo "PHP-FPM tidak berjalan, melanjutkan..."
-php-fpm & || handle_error "Gagal memulai PHP-FPM!"
+
 apachectl start || handle_error "Gagal memulai Apache!"
 
 echo "🔹 Menyiapkan database MariaDB..."
