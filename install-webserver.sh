@@ -1,5 +1,7 @@
-# Bersihkan layar sebelum memulai
-clear
+#!/bin/bash
+
+# Redirect output to log file for debugging
+exec > >(tee -a install.log) 2>&1
 
 # Fungsi untuk menampilkan teks dengan efek ketikan
 type_text() {
@@ -30,6 +32,34 @@ handle_error() {
     exit 1
 }
 
+# Fungsi untuk memeriksa dependensi
+check_dependencies() {
+    echo "🔍 Memeriksa dependensi..."
+    for cmd in wget unzip sed pgrep; do
+        if ! command -v $cmd &> /dev/null; then
+            echo "⚠️ '$cmd' tidak ditemukan. Menginstal..."
+            pkg install $cmd -y || handle_error "Gagal menginstal $cmd."
+        fi
+    done
+}
+
+# Fungsi untuk memeriksa status layanan
+check_service_status() {
+    service_name="$1"
+    pgrep $service_name > /dev/null || handle_error "$service_name tidak berjalan."
+}
+
+# Backup file konfigurasi sebelum diedit
+backup_config() {
+    config_file="$1"
+    if [ -f "$config_file" ]; then
+        cp "$config_file" "${config_file}.bak" || handle_error "Gagal membuat backup konfigurasi."
+        echo "✅ Backup konfigurasi berhasil: ${config_file}.bak"
+    else
+        echo "⚠️ File konfigurasi tidak ditemukan: $config_file"
+    fi
+}
+
 # Intro ASCII Art
 clear
 echo -e "\e[32m"
@@ -40,11 +70,9 @@ cat << "EOF"
     ██╔══██║██╔══██║██║╚██╔╝██║██╔══██║██║  ██║
     ██║  ██║██║  ██║██║ ╚═╝ ██║██║  ██║██████╔╝
     ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝     ╚═╝╚═╝  ╚═╝╚═════╝  
-
       🚀 WEB SERVER INSTALLER | TERMUX EDITION 🚀
 EOF
 echo -e "\e[0m"
-
 sleep 1
 
 # Efek teks ketikan
@@ -55,6 +83,9 @@ sleep 1
 type_text "🔍 Memulai proses instalasi..." 0.03
 sleep 2
 echo ""
+
+# Pemeriksaan dependensi
+check_dependencies
 
 # Mulai Instalasi
 echo "🔹 Memperbarui daftar paket..."
@@ -67,16 +98,18 @@ loading_bar
 pkg install apache2 php php-fpm mariadb wget unzip -y || handle_error "Gagal menginstal paket."
 
 echo "🔹 Mengunduh dan menyiapkan phpMyAdmin..."
-loading_bar
-wget -q --show-progress https://files.phpmyadmin.net/phpMyAdmin/5.2.1/phpMyAdmin-5.2.1-all-languages.zip || handle_error "Gagal mengunduh phpMyAdmin."
-unzip phpMyAdmin-5.2.1-all-languages.zip || handle_error "Gagal mengekstrak phpMyAdmin."
-mv phpMyAdmin-5.2.1-all-languages $PREFIX/share/phpmyadmin || handle_error "Gagal memindahkan phpMyAdmin."
+read -p "Masukkan versi phpMyAdmin (default: 5.2.1): " PHPMYADMIN_VERSION
+PHPMYADMIN_VERSION="${PHPMYADMIN_VERSION:-5.2.1}"
+PHPMYADMIN_URL="https://files.phpmyadmin.net/phpMyAdmin/$PHPMYADMIN_VERSION/phpMyAdmin-$PHPMYADMIN_VERSION-all-languages.zip"
+wget -q --show-progress "$PHPMYADMIN_URL" -O phpmyadmin.zip || handle_error "Gagal mengunduh phpMyAdmin."
+unzip phpmyadmin.zip || handle_error "Gagal mengekstrak phpMyAdmin."
+mv phpMyAdmin-$PHPMYADMIN_VERSION-all-languages $PREFIX/share/phpmyadmin || handle_error "Gagal memindahkan phpMyAdmin."
 mkdir -p $PREFIX/share/phpmyadmin/tmp || handle_error "Gagal membuat direktori tmp."
-chmod 777 $PREFIX/share/phpmyadmin/tmp || handle_error "Gagal mengatur izin direktori tmp."
+chmod 755 $PREFIX/share/phpmyadmin/tmp || handle_error "Gagal mengatur izin direktori tmp."
 
 echo "🔹 Mengedit konfigurasi Apache..."
-loading_bar
 CONFIG_PATH="$PREFIX/etc/apache2/httpd.conf"
+backup_config "$CONFIG_PATH"
 
 # Hapus konfigurasi lama jika ada
 sed -i '/LoadModule php/d' $CONFIG_PATH
@@ -89,19 +122,16 @@ sed -i '/<FilesMatch "\.php$">/,/<\/FilesMatch>/d' $CONFIG_PATH
 
 # Tambahkan konfigurasi baru
 cat <<EOT >> $CONFIG_PATH
-
 # Konfigurasi PHP-FPM
 <FilesMatch "\.php$">
     SetHandler "proxy:fcgi://127.0.0.1:9000"
 </FilesMatch>
-
 # Konfigurasi phpMyAdmin
 Alias /phpmyadmin "$PREFIX/share/phpmyadmin"
 <Directory "$PREFIX/share/phpmyadmin">
     AllowOverride All
     Require all granted
 </Directory>
-
 # Pastikan ServerName diatur
 ServerName localhost
 EOT
@@ -118,15 +148,18 @@ loading_bar
 mysql_install_db || handle_error "Gagal menginisialisasi database."
 mysqld_safe & sleep 5
 
-echo "🔹 Membuat database phpMyAdmin..."
+# Minta pengguna untuk memasukkan password root MariaDB
+read -sp "🔒 Masukkan password root MariaDB (default: root): " MYSQL_ROOT_PASSWORD
+MYSQL_ROOT_PASSWORD="${MYSQL_ROOT_PASSWORD:-root}"
+echo ""
 mysql -u root -e "CREATE DATABASE phpmyadmin;" || handle_error "Gagal membuat database."
-mysql -u root -e "ALTER USER 'root'@'localhost' IDENTIFIED BY 'root';" || handle_error "Gagal mengatur password root."
+mysql -u root -e "ALTER USER 'root'@'localhost' IDENTIFIED BY '$MYSQL_ROOT_PASSWORD';" || handle_error "Gagal mengatur password root."
 mysql -u root -e "FLUSH PRIVILEGES;"
 
 echo "🔹 Mengunduh dan menginstal Ngrok..."
-loading_bar
-wget -q --show-progress https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-stable-linux-arm64.zip || handle_error "Gagal mengunduh Ngrok."
-unzip ngrok-stable-linux-arm64.zip || handle_error "Gagal mengekstrak Ngrok."
+NGROK_URL="https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-stable-linux-arm64.zip"
+wget -q --show-progress "$NGROK_URL" -O ngrok.zip || handle_error "Gagal mengunduh Ngrok."
+unzip ngrok.zip || handle_error "Gagal mengekstrak Ngrok."
 chmod +x ngrok || handle_error "Gagal mengatur izin Ngrok."
 mv ngrok $PREFIX/bin/ || handle_error "Gagal memindahkan Ngrok."
 
@@ -147,6 +180,10 @@ pkill -f php-fpm || echo "PHP-FPM tidak berjalan, melanjutkan..."
 php-fpm & || handle_error "Gagal memulai PHP-FPM!"
 apachectl start || handle_error "Gagal memulai Apache!"
 
+# Verifikasi status layanan
+check_service_status "httpd"
+check_service_status "php-fpm"
+
 # Tampilkan pesan sukses dengan gaya keren
 clear
 echo -e "\e[32m"
@@ -157,10 +194,8 @@ cat << "EOF"
     ██╔══██║██╔══██║██║╚██╔╝██║██╔══██║██║  ██║
     ██║  ██║██║  ██║██║ ╚═╝ ██║██║  ██║██████╔╝
     ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝     ╚═╝╚═╝  ╚═╝╚═════╝  
-╝     
 EOF
 echo -e "\e[0m"
-
 type_text "🚀 Instalasi selesai! Web server siap digunakan!" 0.02
 type_text "🌐 Akses Web Server: http://127.0.0.1:8080" 0.02
 type_text "🌐 phpMyAdmin: http://127.0.0.1:8080/phpmyadmin" 0.02
