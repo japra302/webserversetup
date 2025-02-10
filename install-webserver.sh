@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# Redirect output to log file for debugging
-exec > >(tee -a install.log) 2>&1
+# Redirect output to log files for debugging
+exec > >(tee -a install.log) 2> >(tee -a error.log >&2)
 
 # Fungsi untuk menampilkan teks dengan efek ketikan
 type_text() {
@@ -84,6 +84,11 @@ type_text "🔍 Memulai proses instalasi..." 0.03
 sleep 2
 echo ""
 
+# Pemeriksaan koneksi internet
+if ! ping -q -c 1 google.com > /dev/null; then
+    handle_error "Tidak ada koneksi internet. Harap periksa koneksi Anda."
+fi
+
 # Pemeriksaan dependensi
 check_dependencies
 
@@ -95,17 +100,23 @@ pkg update && pkg upgrade -y || handle_error "Gagal memperbarui paket!"
 
 echo "🔹 Menginstal Apache, PHP, MariaDB, dan alat tambahan..."
 loading_bar
-pkg install apache2 php php-fpm mariadb wget unzip -y || handle_error "Gagal menginstal paket."
+pkg install apache2 php php-fpm mariadb wget unzip pv dialog -y || handle_error "Gagal menginstal paket."
 
 echo "🔹 Mengunduh dan menyiapkan phpMyAdmin..."
 read -p "Masukkan versi phpMyAdmin (default: 5.2.1): " PHPMYADMIN_VERSION
 PHPMYADMIN_VERSION="${PHPMYADMIN_VERSION:-5.2.1}"
 PHPMYADMIN_URL="https://files.phpmyadmin.net/phpMyAdmin/$PHPMYADMIN_VERSION/phpMyAdmin-$PHPMYADMIN_VERSION-all-languages.zip"
+
+# Validasi versi phpMyAdmin
+if ! wget --spider "$PHPMYADMIN_URL" 2>/dev/null; then
+    handle_error "Versi phpMyAdmin tidak valid atau tidak tersedia."
+fi
+
 wget -q --show-progress "$PHPMYADMIN_URL" -O phpmyadmin.zip || handle_error "Gagal mengunduh phpMyAdmin."
 unzip phpmyadmin.zip || handle_error "Gagal mengekstrak phpMyAdmin."
 mv phpMyAdmin-$PHPMYADMIN_VERSION-all-languages $PREFIX/share/phpmyadmin || handle_error "Gagal memindahkan phpMyAdmin."
 mkdir -p $PREFIX/share/phpmyadmin/tmp || handle_error "Gagal membuat direktori tmp."
-chmod 755 $PREFIX/share/phpmyadmin/tmp || handle_error "Gagal mengatur izin direktori tmp."
+chmod 700 $PREFIX/share/phpmyadmin/tmp || handle_error "Gagal mengatur izin direktori tmp."
 
 echo "🔹 Mengedit konfigurasi Apache..."
 CONFIG_PATH="$PREFIX/etc/apache2/httpd.conf"
@@ -148,6 +159,11 @@ loading_bar
 mysql_install_db || handle_error "Gagal menginisialisasi database."
 mysqld_safe & sleep 5
 
+# Verifikasi MariaDB sudah berjalan
+while ! mysqladmin ping -u root --silent; do
+    sleep 1
+done
+
 # Minta pengguna untuk memasukkan password root MariaDB
 read -sp "🔒 Masukkan password root MariaDB (default: root): " MYSQL_ROOT_PASSWORD
 MYSQL_ROOT_PASSWORD="${MYSQL_ROOT_PASSWORD:-root}"
@@ -183,6 +199,9 @@ apachectl start || handle_error "Gagal memulai Apache!"
 # Verifikasi status layanan
 check_service_status "httpd"
 check_service_status "php-fpm"
+
+# Pembersihan file sementara
+rm -f phpmyadmin.zip ngrok.zip
 
 # Tampilkan pesan sukses dengan gaya keren
 clear
